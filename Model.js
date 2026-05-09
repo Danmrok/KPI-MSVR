@@ -1,118 +1,105 @@
-function deg2rad(angle) {
-    return angle * Math.PI / 180;
-}
-
-
-function Vertex(p)
-{
-    this.p = p;
-    this.normal = [];
-    this.triangles = [];
-}
-
-function Triangle(v0, v1, v2)
-{
-    this.v0 = v0;
-    this.v1 = v1;
-    this.v2 = v2;
-    this.normal = [];
-    this.tangent = [];
-}
-
-// Constructor
 function Model(name) {
     this.name = name;
     this.iVertexBuffer = gl.createBuffer();
     this.iIndexBuffer = gl.createBuffer();
+    this.iWireframeIndexBuffer = gl.createBuffer();
     this.count = 0;
+    this.wireCount = 0;
 
-    this.BufferData = function(vertices, indices) {
-
+    this.bindSurfaceAttributes = function() {
         gl.bindBuffer(gl.ARRAY_BUFFER, this.iVertexBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STREAM_DRAW);
         gl.vertexAttribPointer(shProgram.iAttribVertex, 3, gl.FLOAT, false, 0, 0);
         gl.enableVertexAttribArray(shProgram.iAttribVertex);
+        if (shProgram.iAttribTexcoord !== -1) {
+            gl.disableVertexAttribArray(shProgram.iAttribTexcoord);
+        }
+    };
+
+    this.makeWireframeIndices = function(indices) {
+        const wire = new Uint16Array(indices.length * 2);
+        for (let i = 0, w = 0; i < indices.length; i += 3) {
+            const a = indices[i];
+            const b = indices[i + 1];
+            const c = indices[i + 2];
+            wire[w++] = a; wire[w++] = b;
+            wire[w++] = b; wire[w++] = c;
+            wire[w++] = c; wire[w++] = a;
+        }
+        return wire;
+    };
+
+    this.BufferData = function(vertices, indices) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.iVertexBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+        this.bindSurfaceAttributes();
 
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.iIndexBuffer);
-        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STREAM_DRAW);
-
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
         this.count = indices.length;
+
+        const wireIndices = this.makeWireframeIndices(indices);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.iWireframeIndexBuffer);
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, wireIndices, gl.STATIC_DRAW);
+        this.wireCount = wireIndices.length;
     }
 
     this.Draw = function() {
-
-        //gl.drawArrays(gl.LINE_STRIP, 0, this.count);
+        this.bindSurfaceAttributes();
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.iIndexBuffer);
         gl.drawElements(gl.TRIANGLES, this.count, gl.UNSIGNED_SHORT, 0);
     }
 
     this.DrawWireframe = function() {
-
-        for (let p=0; p<this.count; p+=3)
-            gl.drawElements(gl.LINE_LOOP, 3, gl.UNSIGNED_SHORT, p);
+        this.bindSurfaceAttributes();
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.iWireframeIndexBuffer);
+        gl.drawElements(gl.LINES, this.wireCount, gl.UNSIGNED_SHORT, 0);
     }
 }
 
 
 function CreateSurfaceData(data)
 {
-    let vertices = [];
-    let triangles = [];
+    const uSegments = 80;
+    const vSegments = 36;
+    const row = vSegments + 1;
+    const vertexCount = (uSegments + 1) * row;
+    const vertices = new Float32Array(vertexCount * 3);
+    const indices = [];
 
-    for (let i=0, ang = 0; i<72; i++, ang+=5) {
-        vertices.push( new Vertex( [Math.sin(deg2rad(ang)), 0, Math.cos(deg2rad(ang))] ));
+    function shoePoint(out, idx, u, v) {
+        const x = (u - 0.5) * 4.2;
+        const toeBulge = 0.25 * Math.exp(-Math.pow((u - 0.88) / 0.18, 2));
+        const widthProfile = 0.42 + 0.20 * Math.sin(Math.PI * u) + toeBulge;
+        const y = widthProfile * v * (0.95 - 0.18 * u);
+        const arch = 0.24 * Math.sin(Math.PI * u);
+        const sole = -0.18 * (x * x) / 4.41;
+        const crossShape = 0.07 * Math.cos(Math.PI * v);
+        out[idx] = x;
+        out[idx + 1] = y;
+        out[idx + 2] = arch + sole + crossShape;
     }
 
-    for (let i=0, ang = 0; i<72; i++, ang+=5) {
-
-        let v0ind = vertices.length;
-        vertices.push( new Vertex( [Math.sin(deg2rad(ang)), 1, Math.cos(deg2rad(ang))] ));
-
-        // v0    v2 
-        //   o - o
-        //   | \ |
-        //   o - o
-        // v3     v1
-
-        if (i > 0)
-        {
-            let v1ind = v0ind - 72 -1;
-            let v2ind = v0ind - 1;
-            let v3ind = v0ind - 72
-
-            let trian = new Triangle(v0ind, v1ind, v2ind);
-            let trianInd = triangles.length;
-
-            triangles.push( trian );
-            vertices[v0ind].triangles.push(trianInd);
-            vertices[v1ind].triangles.push(trianInd);
-            vertices[v2ind].triangles.push(trianInd);
-
-            let trian2 = new Triangle(v0ind, v3ind, v1ind);
-            let trianInd2 = triangles.length;
-
-            triangles.push( trian2 );
-            vertices[v0ind].triangles.push(trianInd2);
-            vertices[v3ind].triangles.push(trianInd2);
-            vertices[v1ind].triangles.push(trianInd2);
-
+    for (let i = 0, k = 0; i <= uSegments; i++) {
+        const u = i / uSegments;
+        for (let j = 0; j <= vSegments; j++) {
+            const v = (j / vSegments) * 2.0 - 1.0;
+            shoePoint(vertices, k, u, v);
+            k += 3;
         }
-
     }
 
-    data.verticesF32 = new Float32Array(vertices.length*3);
-    for (let i=0, len=vertices.length; i<len; i++)
-    {
-        data.verticesF32[i*3 + 0] = vertices[i].p[0];
-        data.verticesF32[i*3 + 1] = vertices[i].p[1];
-        data.verticesF32[i*3 + 2] = vertices[i].p[2];
+    for (let i = 0; i < uSegments; i++) {
+        for (let j = 0; j < vSegments; j++) {
+            const i0 = i * row + j;
+            const i1 = i0 + 1;
+            const i2 = i0 + row;
+            const i3 = i2 + 1;
+
+            indices.push(i0, i2, i1);
+            indices.push(i1, i2, i3);
+        }
     }
 
-    data.indicesU16 = new Uint16Array(triangles.length*3);
-    for (let i=0, len=triangles.length; i<len; i++)
-    {
-        data.indicesU16[i*3 + 0] = triangles[i].v0;
-        data.indicesU16[i*3 + 1] = triangles[i].v1;
-        data.indicesU16[i*3 + 2] = triangles[i].v2;
-    }
-
+    data.verticesF32 = vertices;
+    data.indicesU16 = Uint16Array.from(indices);
 }
