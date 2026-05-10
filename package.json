@@ -1,0 +1,23 @@
+{
+  "name": "kpi-msvr",
+  "version": "1.0.0",
+  "description": "This WebGL application renders a 3D shoe surface model with anaglyphic stereo visualization. It provides interactive control over stereo parameters and integrates a live webcam stream at the zero-parallax plane.",
+  "main": "main.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Danmrok/KPI-MSVR.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Danmrok/KPI-MSVR/issues"
+  },
+  "homepage": "https://github.com/Danmrok/KPI-MSVR#readme",
+  "dependencies": {
+    "ws": "^8.20.0"
+  }
+}

@@ -7,9 +7,19 @@ let webcamQuadTexcoordBuffer;
 let webcamQuadIndexBuffer;
 let surfaceCenter = [0, 0, 0];
 let animationFrameId = 0;
+let sensorSocket = null;
+let sensorOrientationMatrix = m4.identity();
+let lastSensorAnglesDeg = null;
 const $ = (id) => document.getElementById(id);
 const MODEL_SCALE = 2.4;
 const MODEL_DISTANCE_FACTOR = 0.5;
+const DEFAULT_WEBGL_ASPECT = 4 / 3;
+const MIRRORED_WEBCAM_TEXCOORDS = new Float32Array([
+    1, 1,
+    0, 1,
+    0, 0,
+    1, 0
+]);
 const STEREO_DEFAULTS = {
     convergence: 14.0,
     eyeSeparation: 0.7,
@@ -33,7 +43,6 @@ function ShaderProgram(name, program) {
     this.prog = program;
     this.iAttribVertex = -1;
     this.iColor = -1;
-    this.iModelViewProjectionMatrix = -1;
     this.Use = function() { gl.useProgram(this.prog); };
 }
 
@@ -54,13 +63,14 @@ function drawStereoModel() {
     const modelView = spaceball.getViewMatrix();
     const centerShift = m4.translation(-surfaceCenter[0], -surfaceCenter[1], -surfaceCenter[2]);
     const rotateToPointZero = m4.axisRotation([0.0, 1.0, 0.0], 0.35);
+    const sensorRotation = sensorOrientationMatrix;
     const modelDistance = Math.max(stereoCam.mNearClippingDistance + 0.5, stereoCam.mConvergence * MODEL_DISTANCE_FACTOR);
     gl.uniform1i(shProgram.iUseTexture, 0);
     const baseModel = m4.multiply(
         m4.translation(0, 0, -modelDistance),
         m4.multiply(
             m4.scaling(MODEL_SCALE, MODEL_SCALE, MODEL_SCALE),
-            m4.multiply(m4.multiply(rotateToPointZero, modelView), centerShift)
+            m4.multiply(m4.multiply(m4.multiply(sensorRotation, rotateToPointZero), modelView), centerShift)
         )
     );
     const showFilled = $('showFilled').checked;
@@ -112,12 +122,12 @@ function initGL() {
     surface.BufferData(data.verticesF32, data.indicesU16);
 
     stereoCam = new StereoCamera(
-        14.0,
-        0.7,
+        STEREO_DEFAULTS.convergence,
+        STEREO_DEFAULTS.eyeSeparation,
         gl.canvas.width  / gl.canvas.height,
-        45.0,
-        3.0,
-        50.0
+        STEREO_DEFAULTS.fov,
+        STEREO_DEFAULTS.nearClip,
+        STEREO_DEFAULTS.farClip
     );
 
     gl.enable(gl.DEPTH_TEST);
@@ -209,8 +219,20 @@ function renderWebcamAtZeroParallax() {
         stereoCam.mFarClippingDistance
     );
     const z = -stereoCam.mConvergence;
-    const halfHeight = Math.tan(fovRadians * 0.5) * stereoCam.mConvergence;
-    const halfWidth = halfHeight * canvasAspect;
+    const fullHalfHeight = Math.tan(fovRadians * 0.5) * stereoCam.mConvergence;
+    const fullHalfWidth = fullHalfHeight * canvasAspect;
+    let halfHeight = fullHalfHeight;
+    let halfWidth = fullHalfWidth;
+
+    // Keep camera texture aspect ratio to avoid face stretching/squeezing.
+    if (webcamVideo && webcamVideo.videoWidth > 0 && webcamVideo.videoHeight > 0) {
+        const videoAspect = webcamVideo.videoWidth / webcamVideo.videoHeight;
+        if (videoAspect > canvasAspect) {
+            halfHeight = fullHalfWidth / videoAspect;
+        } else {
+            halfWidth = fullHalfHeight * videoAspect;
+        }
+    }
     const model = m4.multiply(
         m4.translation(0, 0, z),
         m4.scaling(halfWidth, halfHeight, 1.0)
@@ -266,6 +288,11 @@ function initWebcamQuadBuffers() {
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, quadIndices, gl.STATIC_DRAW);
 }
 
+function updateWebcamMirror() {
+    gl.bindBuffer(gl.ARRAY_BUFFER, webcamQuadTexcoordBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, MIRRORED_WEBCAM_TEXCOORDS, gl.STATIC_DRAW);
+}
+
 function updateValueDisplays() {
     STEREO_FIELDS.forEach(([id, fixed]) => {
         $(`${id}Value`).textContent = parseFloat($(id).value).toFixed(fixed);
@@ -310,12 +337,139 @@ function disableWebcam() {
         webcamStream.getTracks().forEach(track => track.stop());
         webcamStream = null;
     }
+    if (webcamVideo) {
+        webcamVideo.pause();
+        webcamVideo.srcObject = null;
+    }
     showWebcamFlag = false;
     $('showWebcam').checked = false;
     draw();
     console.log('Webcam disabled');
 }
 
+function degToRad(v) {
+    return v * Math.PI / 180;
+}
+
+function normalizeAngleDelta(deg) {
+    let delta = deg;
+    while (delta > 180) delta -= 360;
+    while (delta < -180) delta += 360;
+    return delta;
+}
+
+function updateSensorStatus(text) {
+    const status = $('sensorStatus');
+    if (status) {
+        status.textContent = text;
+    }
+}
+
+function updateSensorAnglesDisplay(anglesDeg) {
+    const out = $('sensorAngles');
+    if (!out) return;
+    out.textContent = `Z(alpha): ${anglesDeg.alpha.toFixed(1)} deg, X(beta): ${anglesDeg.beta.toFixed(1)} deg, Y(gamma): ${anglesDeg.gamma.toFixed(1)} deg`;
+}
+
+function extractAnglesFromPacket(packet) {
+    if (!packet || typeof packet !== 'object') return null;
+    const pickNumber = (obj, keys) => {
+        for (let i = 0; i < keys.length; i += 1) {
+            const val = obj[keys[i]];
+            if (typeof val === 'number' && Number.isFinite(val)) return val;
+        }
+        return null;
+    };
+    const alpha = pickNumber(packet, ['alpha', 'yaw', 'z', 'azimuth']);
+    const beta = pickNumber(packet, ['beta', 'pitch', 'x']);
+    const gamma = pickNumber(packet, ['gamma', 'roll', 'y']);
+    if (alpha === null || beta === null || gamma === null) return null;
+    return { alpha, beta, gamma };
+}
+
+function accumulateZXYRotation(deltaAnglesDeg) {
+    // Sensor frames often use opposite sign for pitch/roll versus WebGL scene axes.
+    const mapped = {
+        alpha: deltaAnglesDeg.alpha,
+        beta: deltaAnglesDeg.beta,
+        gamma: -deltaAnglesDeg.gamma
+    };
+    const rz = m4.zRotation(degToRad(mapped.alpha));
+    const rx = m4.xRotation(degToRad(mapped.beta));
+    const ry = m4.yRotation(degToRad(mapped.gamma));
+    const deltaMatrix = m4.multiply(rz, m4.multiply(rx, ry));
+    sensorOrientationMatrix = m4.multiply(sensorOrientationMatrix, deltaMatrix);
+}
+
+function processSensorPacket(packet) {
+    const anglesDeg = extractAnglesFromPacket(packet);
+    if (!anglesDeg) return;
+
+    if (lastSensorAnglesDeg === null) {
+        lastSensorAnglesDeg = anglesDeg;
+        updateSensorAnglesDisplay(anglesDeg);
+        return;
+    }
+
+    const deltaAnglesDeg = {
+        alpha: normalizeAngleDelta(anglesDeg.alpha - lastSensorAnglesDeg.alpha),
+        beta: normalizeAngleDelta(anglesDeg.beta - lastSensorAnglesDeg.beta),
+        gamma: normalizeAngleDelta(anglesDeg.gamma - lastSensorAnglesDeg.gamma)
+    };
+    lastSensorAnglesDeg = anglesDeg;
+    accumulateZXYRotation(deltaAnglesDeg);
+    updateSensorAnglesDisplay(anglesDeg);
+}
+
+function connectSensorStream() {
+    const input = $('sensorWsUrl');
+    if (!input) return;
+    const wsUrl = input.value.trim();
+    if (!wsUrl) {
+        updateSensorStatus('Enter WebSocket URL first');
+        return;
+    }
+
+    if (sensorSocket) {
+        sensorSocket.close();
+        sensorSocket = null;
+    }
+
+    updateSensorStatus('Connecting...');
+    sensorSocket = new WebSocket(wsUrl);
+    sensorSocket.onopen = function() {
+        updateSensorStatus('Connected');
+    };
+    sensorSocket.onmessage = function(event) {
+        try {
+            const payload = JSON.parse(event.data);
+            processSensorPacket(payload);
+        } catch (error) {
+            updateSensorStatus('Invalid sensor JSON');
+        }
+    };
+    sensorSocket.onerror = function() {
+        updateSensorStatus('WebSocket error');
+    };
+    sensorSocket.onclose = function() {
+        updateSensorStatus('Disconnected');
+    };
+}
+
+function disconnectSensorStream() {
+    if (sensorSocket) {
+        sensorSocket.close();
+        sensorSocket = null;
+    }
+    updateSensorStatus('Disconnected');
+}
+
+function resetSensorOrientation() {
+    sensorOrientationMatrix = m4.identity();
+    lastSensorAnglesDeg = null;
+    updateSensorAnglesDisplay({ alpha: 0, beta: 0, gamma: 0 });
+    updateSensorStatus('Orientation reset');
+}
 
 function init() {
     let canvas;
@@ -325,6 +479,7 @@ function init() {
         if (!gl) {
             throw "Browser does not support WebGL";
         }
+        canvas.style.aspectRatio = `${DEFAULT_WEBGL_ASPECT}`;
     }
     catch (e) {
         $("canvas-holder").innerHTML =
@@ -366,9 +521,17 @@ function init() {
         draw();
     });
     $('resetParams').addEventListener('click', resetParameters);
+    const connectBtn = $('sensorConnect');
+    const disconnectBtn = $('sensorDisconnect');
+    const resetSensorBtn = $('sensorResetOrientation');
+    if (connectBtn) connectBtn.addEventListener('click', connectSensorStream);
+    if (disconnectBtn) disconnectBtn.addEventListener('click', disconnectSensorStream);
+    if (resetSensorBtn) resetSensorBtn.addEventListener('click', resetSensorOrientation);
+    updateSensorStatus('Disconnected');
 
     updateValueDisplays();
     updateStereoParameters();
+    updateWebcamMirror();
     if (!animationFrameId) {
         animationFrameId = requestAnimationFrame(tick);
     }

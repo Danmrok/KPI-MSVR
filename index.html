@@ -195,6 +195,22 @@
             font-size: 12px;
             color: #fff;
         }
+
+        .text-input {
+            width: 100%;
+            padding: 8px;
+            border-radius: 4px;
+            border: 1px solid #4FC3F7;
+            background: #222;
+            color: #fff;
+            font-size: 12px;
+        }
+
+        .status {
+            margin-top: 8px;
+            font-size: 12px;
+            color: #81C784;
+        }
         
         @media (max-width: 900px) {
             .container {
@@ -304,6 +320,20 @@
         
         <div class="button-group">
             <button id="resetParams">Reset Parameters</button>
+        </div>
+
+        <div class="separator"></div>
+        <h3 class="section-title section-title--stereo">Smartphone Orientation</h3>
+        <div class="control-group">
+            <label>WebSocket URL</label>
+            <input class="text-input" id="sensorWsUrl" value="ws://localhost:8090/sensor-stream">
+            <div id="sensorStatus" class="status">Disconnected</div>
+            <div id="sensorAngles" class="status">Z(alpha): 0.0 deg, X(beta): 0.0 deg, Y(gamma): 0.0 deg</div>
+        </div>
+        <div class="button-group">
+            <button id="sensorConnect">Connect Sensor</button>
+            <button id="sensorDisconnect">Disconnect Sensor</button>
+            <button id="sensorResetOrientation">Reset Orientation</button>
         </div>
         
     </div>
