@@ -7,9 +7,6 @@ let webcamQuadTexcoordBuffer;
 let webcamQuadIndexBuffer;
 let surfaceCenter = [0, 0, 0];
 let animationFrameId = 0;
-let sensorSocket = null;
-let sensorOrientationMatrix = m4.identity();
-let lastSensorAnglesDeg = null;
 const $ = (id) => document.getElementById(id);
 const MODEL_SCALE = 2.4;
 const MODEL_DISTANCE_FACTOR = 0.5;
@@ -37,6 +34,23 @@ const STEREO_FIELDS = [
     ['farClip', 0]
 ];
 
+let manualYawDeg = 0;
+let soundSourceSphere = null;
+let soundSourceRadius = 1.8;
+let audioCtx = null;
+let audioElement = null;
+let audioSourceNode = null;
+let pannerNode = null;
+let biquadFilter = null;
+let audioFilterEnabled = true;
+let audioLoaded = false;
+
+const FILTER_SETTINGS = {
+    type: 'bandpass',
+    frequency: 1200,
+    Q: 6.5
+};
+
 
 function ShaderProgram(name, program) {
     this.name = name;
@@ -63,14 +77,42 @@ function drawStereoModel() {
     const modelView = spaceball.getViewMatrix();
     const centerShift = m4.translation(-surfaceCenter[0], -surfaceCenter[1], -surfaceCenter[2]);
     const rotateToPointZero = m4.axisRotation([0.0, 1.0, 0.0], 0.35);
-    const sensorRotation = sensorOrientationMatrix;
     const modelDistance = Math.max(stereoCam.mNearClippingDistance + 0.5, stereoCam.mConvergence * MODEL_DISTANCE_FACTOR);
+    const yawRad = degToRad(manualYawDeg);
+    const soundOffsetLocal = [
+        soundSourceRadius * Math.cos(yawRad),
+        0,
+        soundSourceRadius * Math.sin(yawRad)
+    ];
+    const soundOffsetMatrix = m4.translation(soundOffsetLocal[0], soundOffsetLocal[1], soundOffsetLocal[2]);
+    const finalSoundPosition = [
+        soundOffsetLocal[0] * MODEL_SCALE,
+        soundOffsetLocal[1] * MODEL_SCALE,
+        soundOffsetLocal[2] * MODEL_SCALE - modelDistance
+    ];
+    if (pannerNode) {
+        if (typeof pannerNode.positionX === 'object') {
+            pannerNode.positionX.value = finalSoundPosition[0];
+            pannerNode.positionY.value = finalSoundPosition[1];
+            pannerNode.positionZ.value = finalSoundPosition[2];
+        } else if (typeof pannerNode.setPosition === 'function') {
+            pannerNode.setPosition(finalSoundPosition[0], finalSoundPosition[1], finalSoundPosition[2]);
+        }
+    }
+
     gl.uniform1i(shProgram.iUseTexture, 0);
     const baseModel = m4.multiply(
         m4.translation(0, 0, -modelDistance),
         m4.multiply(
             m4.scaling(MODEL_SCALE, MODEL_SCALE, MODEL_SCALE),
-            m4.multiply(m4.multiply(m4.multiply(sensorRotation, rotateToPointZero), modelView), centerShift)
+            m4.multiply(m4.multiply(rotateToPointZero, modelView), centerShift)
+        )
+    );
+    const sphereModel = m4.multiply(
+        m4.translation(0, 0, -modelDistance),
+        m4.multiply(
+            m4.scaling(MODEL_SCALE, MODEL_SCALE, MODEL_SCALE),
+            m4.multiply(m4.multiply(rotateToPointZero, modelView), m4.multiply(soundOffsetMatrix, centerShift))
         )
     );
     const showFilled = $('showFilled').checked;
@@ -91,6 +133,13 @@ function drawStereoModel() {
             gl.uniform4fv(shProgram.iColor, [0.3, 0.3, 0.3, 1]);
             surface.DrawWireframe();
         }
+        gl.uniformMatrix4fv(
+            shProgram.iModelViewMatrix,
+            false,
+            m4.multiply(m4.translation(eye.eyeShift, 0, 0), sphereModel)
+        );
+        gl.uniform4fv(shProgram.iColor, [1.0, 0.4, 0.2, 1]);
+        soundSourceSphere.Draw();
     };
     drawEye(stereoCam.ApplyLeftFrustum(), [true, false, false]);
     gl.clear(gl.DEPTH_BUFFER_BIT);
@@ -120,6 +169,11 @@ function initGL() {
 
     surface = new Model('Surface');
     surface.BufferData(data.verticesF32, data.indicesU16);
+
+    const sphereData = {};
+    CreateSphereData(sphereData, 0.04, 16, 16);
+    soundSourceSphere = new Model('SoundSource');
+    soundSourceSphere.BufferData(sphereData.verticesF32, sphereData.indicesU16);
 
     stereoCam = new StereoCamera(
         STEREO_DEFAULTS.convergence,
@@ -158,6 +212,39 @@ function computeSurfaceCenter(vertices) {
     return [(minX + maxX) * 0.5, (minY + maxY) * 0.5, (minZ + maxZ) * 0.5];
 }
 
+function CreateSphereData(data, radius, latitudeBands, longitudeBands) {
+    const vertices = [];
+    const indices = [];
+
+    for (let lat = 0; lat <= latitudeBands; lat++) {
+        const theta = lat * Math.PI / latitudeBands;
+        const sinTheta = Math.sin(theta);
+        const cosTheta = Math.cos(theta);
+
+        for (let lon = 0; lon <= longitudeBands; lon++) {
+            const phi = lon * 2 * Math.PI / longitudeBands;
+            const sinPhi = Math.sin(phi);
+            const cosPhi = Math.cos(phi);
+
+            const x = radius * cosPhi * sinTheta;
+            const y = radius * cosTheta;
+            const z = radius * sinPhi * sinTheta;
+            vertices.push(x, y, z);
+        }
+    }
+
+    for (let lat = 0; lat < latitudeBands; lat++) {
+        for (let lon = 0; lon < longitudeBands; lon++) {
+            const first = lat * (longitudeBands + 1) + lon;
+            const second = first + longitudeBands + 1;
+            indices.push(first, second, first + 1);
+            indices.push(second, second + 1, first + 1);
+        }
+    }
+
+    data.verticesF32 = new Float32Array(vertices);
+    data.indicesU16 = Uint16Array.from(indices);
+}
 
 function createProgram(gl, vShader, fShader) {
     const vsh = gl.createShader(gl.VERTEX_SHADER);
@@ -192,6 +279,143 @@ function updateStereoParameters() {
         get('nearClip'),
         get('farClip')
     );
+}
+
+function createAudioContext() {
+    if (audioCtx) return;
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    biquadFilter = audioCtx.createBiquadFilter();
+    biquadFilter.type = FILTER_SETTINGS.type;
+    biquadFilter.frequency.value = FILTER_SETTINGS.frequency;
+    biquadFilter.Q.value = FILTER_SETTINGS.Q;
+
+    pannerNode = audioCtx.createPanner();
+    pannerNode.panningModel = 'HRTF';
+    pannerNode.distanceModel = 'inverse';
+    pannerNode.refDistance = 1;
+    pannerNode.maxDistance = 100;
+    pannerNode.rolloffFactor = 1;
+    pannerNode.coneInnerAngle = 360;
+    pannerNode.coneOuterAngle = 0;
+    pannerNode.coneOuterGain = 0;
+    pannerNode.connect(audioCtx.destination);
+}
+
+function connectAudioGraph() {
+    if (!audioCtx || !audioElement) return;
+    if (audioSourceNode) {
+        audioSourceNode.disconnect();
+    }
+    audioSourceNode = audioCtx.createMediaElementSource(audioElement);
+    if (audioFilterEnabled) {
+        audioSourceNode.connect(biquadFilter);
+        biquadFilter.connect(pannerNode);
+    } else {
+        audioSourceNode.connect(pannerNode);
+    }
+}
+
+function updateAudioChain() {
+    if (!audioSourceNode || !pannerNode) return;
+    audioSourceNode.disconnect();
+    biquadFilter.disconnect();
+    if (audioFilterEnabled) {
+        audioSourceNode.connect(biquadFilter);
+        biquadFilter.connect(pannerNode);
+    } else {
+        audioSourceNode.connect(pannerNode);
+    }
+}
+
+function handleAudioFile(event) {
+    const file = event.target.files && event.target.files[0];
+    if (!file) return;
+    if (!file.type.startsWith('audio/')) {
+        $('audioStatus').textContent = 'Please choose a valid audio file';
+        return;
+    }
+    if (!audioElement) {
+        audioElement = new Audio();
+        audioElement.loop = true;
+        audioElement.crossOrigin = 'anonymous';
+    }
+    audioElement.src = URL.createObjectURL(file);
+    audioElement.load();
+    audioLoaded = false;
+    audioElement.oncanplay = function() {
+        audioLoaded = true;
+        $('audioStatus').textContent = `Loaded: ${file.name}`;
+        if (audioCtx) {
+            connectAudioGraph();
+        }
+    };
+    audioElement.onerror = function() {
+        $('audioStatus').textContent = 'Failed to load audio';
+    };
+}
+
+function toggleAudioPlay() {
+    if (!audioLoaded) {
+        $('audioStatus').textContent = 'Choose an audio file first';
+        return;
+    }
+    createAudioContext();
+    if (!audioSourceNode) {
+        connectAudioGraph();
+    }
+    if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+    }
+    if (audioElement.paused) {
+        audioElement.play().then(() => {
+            $('audioPlayPause').textContent = 'Pause';
+            $('audioStatus').textContent = 'Playing spatial audio';
+        }).catch((error) => {
+            $('audioStatus').textContent = 'Playback blocked: user gesture required';
+            console.error(error);
+        });
+    } else {
+        audioElement.pause();
+        $('audioPlayPause').textContent = 'Play';
+        $('audioStatus').textContent = 'Paused';
+    }
+}
+
+function updateFilterEnabled() {
+    audioFilterEnabled = $('enableFilter').checked;
+    if (audioCtx) {
+        updateAudioChain();
+    }
+}
+
+function updateFilterParams() {
+    if (!biquadFilter) return;
+    biquadFilter.frequency.value = FILTER_SETTINGS.frequency;
+    biquadFilter.Q.value = FILTER_SETTINGS.Q;
+}
+
+function handleFilterFrequency(event) {
+    FILTER_SETTINGS.frequency = parseFloat(event.target.value);
+    $('filterFrequencyValue').textContent = FILTER_SETTINGS.frequency.toFixed(0);
+    updateFilterParams();
+}
+
+function handleFilterQ(event) {
+    FILTER_SETTINGS.Q = parseFloat(event.target.value);
+    $('filterQValue').textContent = FILTER_SETTINGS.Q.toFixed(1);
+    updateFilterParams();
+}
+
+function handleManualYaw(event) {
+    manualYawDeg = parseFloat(event.target.value);
+    $('manualYawValue').textContent = manualYawDeg.toFixed(0);
+}
+
+function resetSourcePosition() {
+    manualYawDeg = 0;
+    const yawInput = $('manualYaw');
+    if (yawInput) yawInput.value = '0';
+    $('manualYawValue').textContent = '0';
 }
 
 function updateWebcamTexture() {
@@ -351,126 +575,6 @@ function degToRad(v) {
     return v * Math.PI / 180;
 }
 
-function normalizeAngleDelta(deg) {
-    let delta = deg;
-    while (delta > 180) delta -= 360;
-    while (delta < -180) delta += 360;
-    return delta;
-}
-
-function updateSensorStatus(text) {
-    const status = $('sensorStatus');
-    if (status) {
-        status.textContent = text;
-    }
-}
-
-function updateSensorAnglesDisplay(anglesDeg) {
-    const out = $('sensorAngles');
-    if (!out) return;
-    out.textContent = `Z(alpha): ${anglesDeg.alpha.toFixed(1)} deg, X(beta): ${anglesDeg.beta.toFixed(1)} deg, Y(gamma): ${anglesDeg.gamma.toFixed(1)} deg`;
-}
-
-function extractAnglesFromPacket(packet) {
-    if (!packet || typeof packet !== 'object') return null;
-    const pickNumber = (obj, keys) => {
-        for (let i = 0; i < keys.length; i += 1) {
-            const val = obj[keys[i]];
-            if (typeof val === 'number' && Number.isFinite(val)) return val;
-        }
-        return null;
-    };
-    const alpha = pickNumber(packet, ['alpha', 'yaw', 'z', 'azimuth']);
-    const beta = pickNumber(packet, ['beta', 'pitch', 'x']);
-    const gamma = pickNumber(packet, ['gamma', 'roll', 'y']);
-    if (alpha === null || beta === null || gamma === null) return null;
-    return { alpha, beta, gamma };
-}
-
-function accumulateZXYRotation(deltaAnglesDeg) {
-    // Sensor frames often use opposite sign for pitch/roll versus WebGL scene axes.
-    const mapped = {
-        alpha: deltaAnglesDeg.alpha,
-        beta: deltaAnglesDeg.beta,
-        gamma: -deltaAnglesDeg.gamma
-    };
-    const rz = m4.zRotation(degToRad(mapped.alpha));
-    const rx = m4.xRotation(degToRad(mapped.beta));
-    const ry = m4.yRotation(degToRad(mapped.gamma));
-    const deltaMatrix = m4.multiply(rz, m4.multiply(rx, ry));
-    sensorOrientationMatrix = m4.multiply(sensorOrientationMatrix, deltaMatrix);
-}
-
-function processSensorPacket(packet) {
-    const anglesDeg = extractAnglesFromPacket(packet);
-    if (!anglesDeg) return;
-
-    if (lastSensorAnglesDeg === null) {
-        lastSensorAnglesDeg = anglesDeg;
-        updateSensorAnglesDisplay(anglesDeg);
-        return;
-    }
-
-    const deltaAnglesDeg = {
-        alpha: normalizeAngleDelta(anglesDeg.alpha - lastSensorAnglesDeg.alpha),
-        beta: normalizeAngleDelta(anglesDeg.beta - lastSensorAnglesDeg.beta),
-        gamma: normalizeAngleDelta(anglesDeg.gamma - lastSensorAnglesDeg.gamma)
-    };
-    lastSensorAnglesDeg = anglesDeg;
-    accumulateZXYRotation(deltaAnglesDeg);
-    updateSensorAnglesDisplay(anglesDeg);
-}
-
-function connectSensorStream() {
-    const input = $('sensorWsUrl');
-    if (!input) return;
-    const wsUrl = input.value.trim();
-    if (!wsUrl) {
-        updateSensorStatus('Enter WebSocket URL first');
-        return;
-    }
-
-    if (sensorSocket) {
-        sensorSocket.close();
-        sensorSocket = null;
-    }
-
-    updateSensorStatus('Connecting...');
-    sensorSocket = new WebSocket(wsUrl);
-    sensorSocket.onopen = function() {
-        updateSensorStatus('Connected');
-    };
-    sensorSocket.onmessage = function(event) {
-        try {
-            const payload = JSON.parse(event.data);
-            processSensorPacket(payload);
-        } catch (error) {
-            updateSensorStatus('Invalid sensor JSON');
-        }
-    };
-    sensorSocket.onerror = function() {
-        updateSensorStatus('WebSocket error');
-    };
-    sensorSocket.onclose = function() {
-        updateSensorStatus('Disconnected');
-    };
-}
-
-function disconnectSensorStream() {
-    if (sensorSocket) {
-        sensorSocket.close();
-        sensorSocket = null;
-    }
-    updateSensorStatus('Disconnected');
-}
-
-function resetSensorOrientation() {
-    sensorOrientationMatrix = m4.identity();
-    lastSensorAnglesDeg = null;
-    updateSensorAnglesDisplay({ alpha: 0, beta: 0, gamma: 0 });
-    updateSensorStatus('Orientation reset');
-}
-
 function init() {
     let canvas;
     try {
@@ -498,39 +602,39 @@ function init() {
     spaceball = new TrackballRotator(canvas, draw, 8);
     spaceball.setRotationCenter(surfaceCenter);
 
+    const add = (id, event, fn) => $(id)?.addEventListener(event, fn);
     const onStereoInput = () => {
         updateValueDisplays();
         updateStereoParameters();
         draw();
     };
-    STEREO_FIELDS.forEach(([id]) => {
-        $(id).addEventListener('input', onStereoInput);
-    });
+    STEREO_FIELDS.forEach(([id]) => add(id, 'input', onStereoInput));
 
-    ['showWireframe', 'showFilled'].forEach((id) => $(id).addEventListener('change', draw));
-    $('showWebcam').addEventListener('change', function() {
+    ['showWireframe', 'showFilled'].forEach((id) => add(id, 'change', draw));
+    add('showWebcam', 'change', function() {
         showWebcamFlag = this.checked;
-        if (showWebcamFlag && !webcamStream) {
-            enableWebcam();
-            return;
-        }
-        if (!showWebcamFlag) {
-            disableWebcam();
-            return;
-        }
+        if (showWebcamFlag && !webcamStream) return enableWebcam();
+        if (!showWebcamFlag) return disableWebcam();
         draw();
     });
-    $('resetParams').addEventListener('click', resetParameters);
-    const connectBtn = $('sensorConnect');
-    const disconnectBtn = $('sensorDisconnect');
-    const resetSensorBtn = $('sensorResetOrientation');
-    if (connectBtn) connectBtn.addEventListener('click', connectSensorStream);
-    if (disconnectBtn) disconnectBtn.addEventListener('click', disconnectSensorStream);
-    if (resetSensorBtn) resetSensorBtn.addEventListener('click', resetSensorOrientation);
-    updateSensorStatus('Disconnected');
+
+    [
+        ['audioFile', 'change', handleAudioFile],
+        ['audioPlayPause', 'click', toggleAudioPlay],
+        ['resetSourcePosition', 'click', resetSourcePosition],
+        ['enableFilter', 'change', updateFilterEnabled],
+        ['filterFrequency', 'input', handleFilterFrequency],
+        ['filterQ', 'input', handleFilterQ],
+        ['manualYaw', 'input', handleManualYaw],
+        ['resetParams', 'click', resetParameters]
+    ].forEach(([id, event, fn]) => add(id, event, fn));
 
     updateValueDisplays();
     updateStereoParameters();
+    updateFilterParams();
+    $('filterFrequencyValue').textContent = FILTER_SETTINGS.frequency.toFixed(0);
+    $('filterQValue').textContent = FILTER_SETTINGS.Q.toFixed(1);
+    $('manualYawValue').textContent = manualYawDeg.toFixed(0);
     updateWebcamMirror();
     if (!animationFrameId) {
         animationFrameId = requestAnimationFrame(tick);

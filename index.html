@@ -70,8 +70,7 @@
             padding: 20px;
             border-radius: 8px;
             border: 1px solid #4FC3F7;
-            max-height: 800px;
-            overflow-y: auto;
+            overflow-y: visible;
         }
 
         .right-panel {
@@ -96,6 +95,10 @@
 
         .section-title--render {
             color: #81C784;
+        }
+
+        .section-title--audio {
+            color: #F48FB1;
         }
         
         .control-group {
@@ -323,19 +326,37 @@
         </div>
 
         <div class="separator"></div>
-        <h3 class="section-title section-title--stereo">Smartphone Orientation</h3>
+    </div>
+    <div class="controls-section">
+        <h3 class="section-title section-title--audio">Spatial Audio</h3>
         <div class="control-group">
-            <label>WebSocket URL</label>
-            <input class="text-input" id="sensorWsUrl" value="ws://localhost:8090/sensor-stream">
-            <div id="sensorStatus" class="status">Disconnected</div>
-            <div id="sensorAngles" class="status">Z(alpha): 0.0 deg, X(beta): 0.0 deg, Y(gamma): 0.0 deg</div>
+            <label>Audio Track</label>
+            <input class="text-input" id="audioFile" type="file" accept="audio/*">
+        </div>
+        <div class="checkbox-group">
+            <input type="checkbox" id="enableFilter" checked>
+            <label for="enableFilter">Enable Band-pass Filter</label>
+        </div>
+        <div class="control-group">
+            <label>Filter Frequency</label>
+            <input type="range" id="filterFrequency" min="200" max="5000" step="50" value="1200">
+            <div class="value-display"><span id="filterFrequencyValue">1200</span> Hz</div>
+        </div>
+        <div class="control-group">
+            <label>Filter Q</label>
+            <input type="range" id="filterQ" min="0.1" max="20" step="0.1" value="6.5">
+            <div class="value-display"><span id="filterQValue">6.5</span></div>
+        </div>
+        <div class="control-group">
+            <label>Manual Yaw</label>
+            <input type="range" id="manualYaw" min="0" max="360" step="1" value="0">
+            <div class="value-display"><span id="manualYawValue">0</span>°</div>
         </div>
         <div class="button-group">
-            <button id="sensorConnect">Connect Sensor</button>
-            <button id="sensorDisconnect">Disconnect Sensor</button>
-            <button id="sensorResetOrientation">Reset Orientation</button>
+            <button id="audioPlayPause">Play / Pause</button>
+            <button id="resetSourcePosition">Reset Source</button>
         </div>
-        
+        <div id="audioStatus" class="status">No audio loaded</div>
     </div>
     <div class="controls-section">
         <div class="info-section">
