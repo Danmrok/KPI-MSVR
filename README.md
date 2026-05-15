@@ -1,123 +1,136 @@
-# Anaglyphic Stereo 3D Visualization with Webcam Integration
+# AR Shoe Surface
+
+An iOS augmented reality application that renders an anaglyphic stereo 3D shoe surface model aligned to a printed AR marker. Built with ARKit and SceneKit in SwiftUI as a continuation of the WebGL anaglyphic stereo visualization (PA#1).
+
+---
 
 ## Overview
-This WebGL application renders a 3D shoe surface model with anaglyphic stereo visualization. It provides interactive control over stereo parameters and integrates a live webcam stream at the zero-parallax plane.
 
-## Features
+The application detects a printed marker using ARKit image tracking and overlays the parametric shoe surface model on top of it in real time. The model is rendered in anaglyphic stereo (red-cyan) with a wireframe overlay on top of filled polygons — matching the rendering style of PA#1. The model automatically scales and fits within the marker bounds regardless of the printed size.
 
-### 1. Anaglyphic Stereo Rendering
-- **Red-Cyan anaglyph** visualization for 3D perception
-- **Negative parallax** (objects appear in front of screen)
-- Left eye renders in red channel
-- Right eye renders in cyan channels (green + blue)
-- Requires red-cyan anaglyph glasses
+---
 
-### 2. Rendering Options
-- **Wireframe Mode**: Toggle wireframe overlay on the surface
-- **Filled Polygons**: Toggle filled polygon rendering
-- **Webcam Stream**: Display live webcam feed at zero-parallax plane
+## Project Structure
 
-### 4. Mouse Interaction
-- **Trackball Rotation**: Click and drag to rotate the model around its center
-- Smooth, intuitive 3D manipulation
+```
+ShoeAR/
+├── ShoeAR_App.swift        # @main entry point
+├── ContentView.swift       # SwiftUI root view with status bar and info overlay
+├── ARViewController.swift  # ARKit session + SceneKit rendering pipeline
+└── ShoeGeometry.swift      # Parametric shoe surface (Swift port of PA#1 Model.js)
+```
 
-### 5. Webcam Integration
-- Stream renders at zero-parallax plane (convergence distance)
-- Appears at the same depth as the model convergence point
-- Can be toggled on/off with rendering options
+> ARKit does not work in Simulator — a real device is required.
 
-## Technical Details
+---
 
-### Architecture
+## Registration Template
 
-**Files:**
-- `index.html` - UI with stereo controls and webcam display
-- `main.js` - Rendering engine and parameter management
-- `StereoCamera.js` - Stereo camera calculations
-- `Model.js` - 3D model definition (shoe surface)
-- `shader.gpu` - Vertex and fragment shaders
-- `Utils/trackball-rotator.js` - Mouse rotation control
-- `Utils/m4.js` - Matrix mathematics library
+As the registration template we use the **Hiro marker** from the AR.js toolkit:
 
-### Stereo Rendering Pipeline
+**[https://jeromeetienne.github.io/AR.js/data/images/HIRO.jpg](https://jeromeetienne.github.io/AR.js/data/images/HIRO.jpg)**
 
-1. **Initialize Stereo Camera** with parameters
-2. **Left Eye Pass**:
-   - Set red color mask
-   - Translate camera by +eyeSeparation/2
-   - Calculate asymmetric frustum based on convergence distance
-   - Render filled polygons
-   - Render wireframe overlay
-3. **Right Eye Pass**:
-   - Clear depth buffer only
-   - Set cyan color mask
-   - Translate camera by -eyeSeparation/2
-   - Calculate asymmetric frustum
-   - Render filled polygons
-   - Render wireframe overlay
-4. **Webcam Rendering** (if enabled):
-   - Render quad at zero-parallax plane
-   - Apply webcam video texture
-   - No parallax effect (visible to both eyes identically)
 
-### Frustum Calculation
-The projection matrices are calculated based on:
-- Near and far clipping planes
-- Field of view
-- Aspect ratio
-- Eye separation and convergence distance for asymmetric frustum
+### How to print
 
-This creates the proper parallax effect for negative parallax (objects in front of screen).
+1. Open the Hiro marker link above in a browser
+2. Save the image and print it at **100% scale**
+3. Verify the printed marker is at least **10 × 10 cm**
+4. Attach it to a flat surface of any real object (box, book, shoe box, etc.)
 
-## Usage Instructions
+### Adding the marker to Xcode
 
-1. **Open in Browser**: Load `index.html` in WebGL-compatible browser
-2. **Wear Anaglyph Glasses**: Put on red-cyan 3D glasses
-3. **Rotate Model**: Click and drag on canvas to rotate
-4. **Adjust Parameters**: Use sliders to find comfortable viewing:
-   - Increase eye separation for stronger 3D
-   - Adjust convergence distance where you want focus
-   - Modify FOV for preference
-5. **Enable Webcam** (Optional):
-   - Check "Show Webcam Stream"
-6. **Reset**: Use "Reset Parameters" button to restore defaults
+1. Save the Hiro marker image as a PNG file
+2. In Xcode, right-click the project navigator → **Add AR Resources** (creates an AR Resources asset group)
+3. Drag the saved PNG into the AR Resources group
+4. Select the asset and set **Physical Width** to match your printed size
 
-## Browser Requirements
-- WebGL support (modern browsers: Chrome, Firefox, Edge, Safari)
-- For webcam: HTTPS connection (or localhost) and camera permission
+---
 
-## Physical Parameters
-- Measurements in decimeters (dm)
-- Typical comfortable viewing:
-  - Eye separation: 0.65-0.75 dm
-  - Convergence distance: 12-16 dm
-  - FOV: 40-50°
+## How It Works
 
-## Tips for Best Experience
+### ARKit Image Tracking
 
-1. **Glasses Alignment**: Ensure glasses are properly aligned
-2. **Distance**: Sit about 40-50 cm from screen
-3. **Parameter Tuning**: Start with defaults, adjust eye separation for comfort
-4. **Convergence**: Adjust convergence distance to where model appears
-5. **Lighting**: Use in well-lit environment for better color accuracy
-6. **Webcam**: Position camera to see your face at zero-parallax plane
+The app uses `ARImageTrackingConfiguration` to continuously track the printed marker in the camera feed. When the marker is detected, ARKit provides a world-space `ARImageAnchor` with position and orientation. The shoe node is attached to that anchor and follows it in real time.
 
-## Performance Notes
-- Rendered at full canvas resolution
-- Dual-pass rendering (once per eye)
-- Webcam texture updates per frame
-- Smooth performance on modern hardware
+### Parametric Shoe Surface
 
-## Advanced Features
+`ShoeGeometry.swift` is a direct Swift port of the `shoePoint()` function from PA#1 `Model.js`, using the same mathematical formula:
 
-### Wireframe on Filled
-Renders wireframe edges on top of filled polygons for enhanced depth perception:
-- Filled polygons provide depth
-- Wireframe edges enhance edge definition
+```
+x = (u − 0.5) × 4.2
+toeBulge     = 0.25 · exp(−((u − 0.88) / 0.18)²)
+widthProfile = 0.42 + 0.20·sin(πu) + toeBulge
+y = widthProfile · v · (0.95 − 0.18u)
+z = 0.24·sin(πu) − 0.18x²/4.41 + 0.07·cos(πv)
+```
 
-### Zero-Parallax Webcam
-Webcam rendered at convergence distance ensures:
-- No parallax disparity
-- Same position for both eyes
-- Effective background plane
+Mesh resolution: 80 × 36 segments → 2 997 vertices, 5 760 triangles.
 
+### Anaglyphic Stereo Rendering
+
+Two separate SceneKit nodes are built for the left and right eyes:
+
+| Eye | Color channels | Horizontal shift |
+|-----|---------------|-----------------|
+| Left | Red only `(1, 0, 0)` | +eyeShift |
+| Right | Cyan only `(0, 1, 1)` | −eyeShift |
+
+The eye shift is calculated as 3% of the marker width, capped by the available space so neither eye overflows the marker boundary. This replicates the asymmetric frustum stereo approach from PA#1.
+
+### Wireframe on Filled Polygons
+
+Each eye node renders filled polygons first, then wireframe edges on top — matching the draw order from PA#1:
+
+```swift
+eye.addChildNode(SCNNode(geometry: filledGeometry))    // filled first
+eye.addChildNode(SCNNode(geometry: wireframeGeometry)) // wireframe on top
+```
+
+### Adaptive Scaling
+
+The model bounding box is computed at runtime and the uniform scale is chosen so the model fits inside the marker on both axes with a 5% padding:
+
+```swift
+let scaleForWidth  = (markerWidth  × 0.95) / modelSizeX
+let scaleForHeight = (markerHeight × 0.95) / modelSizeY
+let scale = min(scaleForWidth, scaleForHeight)
+```
+
+This ensures the model always stays within the marker bounds regardless of the physical print size.
+
+---
+
+## Usage
+
+1. Open the Hiro marker image on any screen or print it out
+2. Launch the app on iPhone
+3. Point the camera at the Hiro marker
+4. The green **Marker detected** indicator appears when tracking is active
+5. Put on red-cyan anaglyph glasses to see the stereo 3D effect
+6. Move the phone around to view the model from different angles
+
+---
+
+## Comparison with PA#1 (WebGL)
+
+| Feature | PA#1 (WebGL) | СT (ARKit) |
+|---------|-----------|-----------|
+| Rendering | WebGL canvas | SceneKit / ARKit |
+| Stereo method | Color mask per draw call | Separate SCNNode per eye |
+| Wireframe | `gl.LINES` over triangles | `SCNGeometryPrimitiveType.line` |
+| Surface formula | `shoePoint()` in JS | `shoePoint()` ported to Swift |
+| Camera control | Trackball mouse rotation | Physical camera movement in AR |
+| Marker tracking | N/A | ARKit `ARImageTrackingConfiguration` |
+
+---
+
+## Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| Marker not detected | Ensure good lighting; keep camera 20–50 cm from marker |
+| Model appears too small | Increase Physical Width in AR Resources to match actual print size |
+| Build error about ARKit | Must run on a real device, Simulator is not supported |
+| Camera permission denied | Add `Privacy - Camera Usage Description` in Target → Info |
+| Model partially outside marker | Check that Physical Width in AR Resources matches the real printed size |
